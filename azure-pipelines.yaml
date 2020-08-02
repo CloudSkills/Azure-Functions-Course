@@ -1,0 +1,71 @@
+# Trigger the pipeline when there are changes to the master branch
+trigger:
+  branches:
+    include: 
+    - master
+
+# Define variables that will be used throughout the YAML file
+variables:
+  ServiceConnection: 'AzureSC'
+  FunctionAppName: 'cscicdfcn01'
+  AppServicePlanName: 'ASP-cscicd-8a98'
+  StgAccType: 'Standard_LRS'
+  StgAccName: 'storageaccountcscicd820c'
+  Location: 'AustraliaEast'
+  ResourceGroupName: 'cscicd'
+  VMImage: 'VS2017-Win2016'
+
+
+stages:
+  # Define the build stage
+  - stage: Build
+    jobs:
+    - job: Build
+      pool:
+        vmImage: '$(VMImage)'
+
+      steps:
+      # Deploy a new Azure Resource Group using the ARM template
+      - task: AzureResourceGroupDeployment@2
+        displayName: 'Create Function App'
+        inputs:
+          azureSubscription: '$(ServiceConnection)'
+          resourceGroupName: '$(ResourceGroupName)'
+          location: '$(Location)'
+          csmFile: '$(System.DefaultWorkingDirectory)/**/azuredeploy.json'
+          overrideParameters: '-appName $(FunctionAppName) -storageaccountname $(StgAccName) -storageAccountType $(StgAccType) -runtime "powershell" -powerShellVersion "~6" -location $(Location)'
+      
+      # ZIP the files ready for a publish task
+      - task: ArchiveFiles@2
+        displayName: 'Archive files'
+        inputs:
+          rootFolderOrFile: '$(System.DefaultWorkingDirectory)'
+          includeRootFolder: false
+          archiveFile: "$(Build.StagingDirectory)/$(Build.BuildId).zip"
+      
+      # Publish the files so the release job can pick them up
+      - task: PublishBuildArtifacts@1
+        inputs:
+          pathToPublish: "$(Build.StagingDirectory)/$(Build.BuildId).zip"
+          artifactName: drop
+
+  # Define the release stage
+  - stage: Release
+    jobs:
+    - job: Release
+      pool:
+        vmImage: '$(VMImage)'
+      steps:
+      # Don't check out any code, download the published atrifact from the build stage
+      - checkout: none
+      - download: current
+        artifact: drop
+
+      # Use the Azure Function App task to deploy the code to the newly deployed Azure Function App
+      - task: AzureFunctionApp@1
+        displayName: 'Azure Function App Deploy'
+        inputs:
+          azureSubscription: '$(ServiceConnection)'
+          appType: functionApp
+          appName: '$(FunctionAppName)'
+          package: '$(Pipeline.Workspace)/**/*.zip'
